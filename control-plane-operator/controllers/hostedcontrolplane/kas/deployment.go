@@ -211,27 +211,27 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				util.BuildContainer(kasContainerApplyBootstrap(), buildKASContainerApplyBootstrap(images.CLI)),
 				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp)),
 				util.BuildContainer(konnectivityServerContainer(), buildKonnectivityServerContainer(images.KonnectivityServer, deploymentConfig.Replicas, cipherSuites)),
-				{
-					Name:            "audit-logs",
-					Image:           images.CLI,
-					ImagePullPolicy: corev1.PullIfNotPresent,
-					Command: []string{
-						"/usr/bin/tail",
-						"-c+1",
-						"-F",
-						fmt.Sprintf("%s/%s", volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name), "audit.log"),
-					},
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("5m"),
-							corev1.ResourceMemory: resource.MustParse("10Mi"),
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{{
-						Name:      kasVolumeWorkLogs().Name,
-						MountPath: volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name),
-					}},
-				},
+				// {
+				// 	Name:            "audit-logs",
+				// 	Image:           images.CLI,
+				// 	ImagePullPolicy: corev1.PullIfNotPresent,
+				// 	Command: []string{
+				// 		"/usr/bin/tail",
+				// 		"-c+1",
+				// 		"-F",
+				// 		fmt.Sprintf("%s/%s", volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name), "audit.log"),
+				// 	},
+				// 	Resources: corev1.ResourceRequirements{
+				// 		Requests: corev1.ResourceList{
+				// 			corev1.ResourceCPU:    resource.MustParse("5m"),
+				// 			corev1.ResourceMemory: resource.MustParse("10Mi"),
+				// 		},
+				// 	},
+				// 	VolumeMounts: []corev1.VolumeMount{{
+				// 		Name:      kasVolumeWorkLogs().Name,
+				// 		MountPath: volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name),
+				// 	}},
+				// },
 			},
 			Volumes: []corev1.Volume{
 				util.BuildVolume(kasVolumeBootstrapManifests(), buildKASVolumeBootstrapManifests),
