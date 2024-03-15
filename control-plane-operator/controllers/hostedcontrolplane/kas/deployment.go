@@ -138,17 +138,17 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 	}
 	configHash := util.ComputeHash(configBytes)
 
-	auditConfigBytes, ok := auditConfig.Data[AuditPolicyConfigMapKey]
-	if !ok {
-		return fmt.Errorf("kube apiserver audit configuration is not expected to be empty")
-	}
-	auditConfigHash := util.ComputeHash(auditConfigBytes)
-
 	authConfigBytes, ok := authConfig.Data[AuthConfigMapKey]
 	if !ok {
 		return fmt.Errorf("kube apiserver authentication configuration is not expected to be empty")
 	}
 	authConfigHash := util.ComputeHash(authConfigBytes)
+
+	auditConfigBytes, ok := auditConfig.Data[AuditPolicyConfigMapKey]
+	if !ok {
+		return fmt.Errorf("kube apiserver audit configuration is not expected to be empty")
+	}
+	auditConfigHash := util.ComputeHash(auditConfigBytes)
 
 	// preserve existing resource requirements for main KAS container
 	kasContainer := util.FindContainer(kasContainerMain().Name, deployment.Spec.Template.Spec.Containers)
@@ -211,27 +211,6 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				util.BuildContainer(kasContainerApplyBootstrap(), buildKASContainerApplyBootstrap(images.CLI)),
 				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp)),
 				util.BuildContainer(konnectivityServerContainer(), buildKonnectivityServerContainer(images.KonnectivityServer, deploymentConfig.Replicas, cipherSuites)),
-				// {
-				// 	Name:            "audit-logs",
-				// 	Image:           images.CLI,
-				// 	ImagePullPolicy: corev1.PullIfNotPresent,
-				// 	Command: []string{
-				// 		"/usr/bin/tail",
-				// 		"-c+1",
-				// 		"-F",
-				// 		fmt.Sprintf("%s/%s", volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name), "audit.log"),
-				// 	},
-				// 	Resources: corev1.ResourceRequirements{
-				// 		Requests: corev1.ResourceList{
-				// 			corev1.ResourceCPU:    resource.MustParse("5m"),
-				// 			corev1.ResourceMemory: resource.MustParse("10Mi"),
-				// 		},
-				// 	},
-				// 	VolumeMounts: []corev1.VolumeMount{{
-				// 		Name:      kasVolumeWorkLogs().Name,
-				// 		MountPath: volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name),
-				// 	}},
-				// },
 			},
 			Volumes: []corev1.Volume{
 				util.BuildVolume(kasVolumeBootstrapManifests(), buildKASVolumeBootstrapManifests),
@@ -239,7 +218,6 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				util.BuildVolume(kasVolumeWorkLogs(), buildKASVolumeWorkLogs),
 				util.BuildVolume(kasVolumeConfig(), buildKASVolumeConfig),
 				util.BuildVolume(kasVolumeAuthConfig(), buildKASVolumeAuthConfig),
-				util.BuildVolume(kasVolumeAuditConfig(), buildKASVolumeAuditConfig),
 				util.BuildVolume(kasVolumeKonnectivityCA(), buildKASVolumeKonnectivityCA),
 				util.BuildVolume(kasVolumeServerCert(), buildKASVolumeServerCert),
 				util.BuildVolume(kasVolumeAggregatorCert(), buildKASVolumeAggregatorCert),
@@ -248,6 +226,7 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				util.BuildVolume(kasVolumeEtcdCA(), buildKASVolumeEtcdCA),
 				util.BuildVolume(kasVolumeEtcdClientCert(), buildKASVolumeEtcdClientCert),
 				util.BuildVolume(kasVolumeOauthMetadata(), buildKASVolumeOauthMetadata),
+				util.BuildVolume(kasVolumeAuditConfig(), buildKASVolumeAuditConfig),
 				util.BuildVolume(kasVolumeAuthTokenWebhookConfig(), buildKASVolumeAuthTokenWebhookConfig),
 				util.BuildVolume(common.VolumeTotalClientCA(), common.BuildVolumeTotalClientCA),
 				util.BuildVolume(kasVolumeKubeletClientCert(), buildKASVolumeKubeletClientCert),
@@ -259,6 +238,30 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				util.BuildVolume(konnectivityVolumeClusterCerts(), buildKonnectivityVolumeClusterCerts),
 			},
 		},
+	}
+
+	if !strings.Contains(auditConfig.Data[AuditPolicyProfileMapKey], string(configv1.NoneAuditProfileType)) {
+		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
+			Name:            "audit-logs",
+			Image:           images.CLI,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Command: []string{
+				"/usr/bin/tail",
+				"-c+1",
+				"-F",
+				fmt.Sprintf("%s/%s", volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name), "audit.log"),
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("5m"),
+					corev1.ResourceMemory: resource.MustParse("10Mi"),
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{{
+				Name:      kasVolumeWorkLogs().Name,
+				MountPath: volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name),
+			}},
+		})
 	}
 
 	// With managed etcd, we should wait for the known etcd client service name to
