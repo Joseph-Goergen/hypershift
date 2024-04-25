@@ -239,11 +239,10 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 			Name:            "audit-logs",
 			Image:           images.CLI,
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			Command: []string{
-				"/usr/bin/tail",
-				"-c+1",
-				"-F",
-				fmt.Sprintf("%s/%s", volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name), "audit.log"),
+			Command:         []string{"/bin/bash"},
+			Args: []string{
+				"-c",
+				renderAuditLogScript(fmt.Sprintf("%s/%s", volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name), "audit.log")),
 			},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -966,4 +965,13 @@ func buildKonnectivityVolumeClusterCerts(v *corev1.Volume) {
 		SecretName:  manifests.KonnectivityClusterSecret("").Name,
 		DefaultMode: pointer.Int32(0640),
 	}
+}
+
+func renderAuditLogScript(auditLogFilePath string) string {
+	var script = `#!/bin/bash
+trap exit SIGTERM
+/usr/bin/tail -c+1 -F %s &
+wait $!
+`
+	return fmt.Sprintf(script, auditLogFilePath)
 }

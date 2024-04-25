@@ -125,8 +125,9 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 	deployment.Spec.Template.Annotations[auditConfigHashAnnotation] = auditConfigHash
 
 	deployment.Spec.Template.Spec = corev1.PodSpec{
-		AutomountServiceAccountToken: pointer.Bool(false),
-		InitContainers:               []corev1.Container{util.BuildContainer(oasTrustAnchorGenerator(), buildOASTrustAnchorGenerator(image))},
+		AutomountServiceAccountToken:  pointer.Bool(false),
+		TerminationGracePeriodSeconds: pointer.Int64(120),
+		InitContainers:                []corev1.Container{util.BuildContainer(oasTrustAnchorGenerator(), buildOASTrustAnchorGenerator(image))},
 		Containers: []corev1.Container{
 			util.BuildContainer(oasContainerMain(), buildOASContainerMain(image, strings.Split(etcdUrlData.Host, ":")[0], defaultOAPIPort, internalOAuthDisable)),
 			util.BuildContainer(oasSocks5ProxyContainer(), buildOASSocks5ProxyContainer(socks5ProxyImage)),
@@ -159,11 +160,10 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 			Name:            "audit-logs",
 			Image:           image,
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			Command: []string{
-				"/usr/bin/tail",
-				"-c+1",
-				"-F",
-				fmt.Sprintf("%s/%s", volumeMounts.Path(oasContainerMain().Name, oasVolumeWorkLogs().Name), "audit.log"),
+			Command:         []string{"/bin/bash"},
+			Args: []string{
+				"-c",
+				renderAuditLogScript(fmt.Sprintf("%s/%s", volumeMounts.Path(oasContainerMain().Name, oasVolumeWorkLogs().Name), "audit.log")),
 			},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -451,4 +451,13 @@ func buildOASVolumeKonnectivityProxyCert(v *corev1.Volume) {
 func buildOASVolumeKonnectivityProxyCA(v *corev1.Volume) {
 	v.ConfigMap = &corev1.ConfigMapVolumeSource{}
 	v.ConfigMap.Name = manifests.KonnectivityCAConfigMap("").Name
+}
+
+func renderAuditLogScript(auditLogFilePath string) string {
+	var script = `#!/bin/bash
+trap exit SIGTERM
+/usr/bin/tail -c+1 -F %s &
+wait $!
+`
+	return fmt.Sprintf(script, auditLogFilePath)
 }
