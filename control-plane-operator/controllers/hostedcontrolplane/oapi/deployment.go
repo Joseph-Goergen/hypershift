@@ -41,7 +41,6 @@ var (
 		oasContainerMain().Name: {
 			oasVolumeWorkLogs().Name:          "/var/log/openshift-apiserver",
 			oasVolumeConfig().Name:            "/etc/kubernetes/config",
-			oasVolumeAuditConfig().Name:       "/etc/kubernetes/audit-config",
 			common.VolumeAggregatorCA().Name:  "/etc/kubernetes/certs/aggregator-client-ca",
 			oasVolumeEtcdClientCA().Name:      "/etc/kubernetes/certs/etcd-client-ca",
 			oasVolumeKubeconfig().Name:        "/etc/kubernetes/secrets/svc-kubeconfig",
@@ -66,6 +65,12 @@ var (
 	oasAuditWebhookConfigFileVolumeMount = util.PodVolumeMounts{
 		oasContainerMain().Name: {
 			oasAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
+		},
+	}
+
+	oasAuditConfigFileVolumeMount = util.PodVolumeMounts{
+		oasContainerMain().Name: {
+			oasVolumeAuditConfig().Name: "/etc/kubernetes/audit-config",
 		},
 	}
 )
@@ -122,19 +127,19 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 		deployment.Spec.Template.Annotations = map[string]string{}
 	}
 	deployment.Spec.Template.Annotations[configHashAnnotation] = configHash
-	deployment.Spec.Template.Annotations[auditConfigHashAnnotation] = auditConfigHash
+
+	auditEnabled := auditConfig.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType)
 
 	deployment.Spec.Template.Spec = corev1.PodSpec{
 		AutomountServiceAccountToken: pointer.Bool(false),
 		InitContainers:               []corev1.Container{util.BuildContainer(oasTrustAnchorGenerator(), buildOASTrustAnchorGenerator(image))},
 		Containers: []corev1.Container{
-			util.BuildContainer(oasContainerMain(), buildOASContainerMain(image, strings.Split(etcdUrlData.Host, ":")[0], defaultOAPIPort, internalOAuthDisable)),
+			util.BuildContainer(oasContainerMain(), buildOASContainerMain(image, strings.Split(etcdUrlData.Host, ":")[0], defaultOAPIPort, internalOAuthDisable, auditEnabled)),
 			util.BuildContainer(oasSocks5ProxyContainer(), buildOASSocks5ProxyContainer(socks5ProxyImage)),
 		},
 		Volumes: []corev1.Volume{
 			util.BuildVolume(oasVolumeWorkLogs(), buildOASVolumeWorkLogs),
 			util.BuildVolume(oasVolumeConfig(), buildOASVolumeConfig),
-			util.BuildVolume(oasVolumeAuditConfig(), buildOASVolumeAuditConfig),
 			util.BuildVolume(common.VolumeAggregatorCA(), common.BuildVolumeAggregatorCA),
 			util.BuildVolume(oasVolumeEtcdClientCA(), buildOASVolumeEtcdClientCA),
 			util.BuildVolume(common.VolumeTotalClientCA(), common.BuildVolumeTotalClientCA),
@@ -154,7 +159,7 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 		},
 	}
 
-	if auditConfig.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType) {
+	if auditEnabled {
 		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
 			Name:            "audit-logs",
 			Image:           image,
@@ -176,6 +181,8 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 				MountPath: volumeMounts.Path(oasContainerMain().Name, oasVolumeWorkLogs().Name),
 			}},
 		})
+		deployment.Spec.Template.Annotations[auditConfigHashAnnotation] = auditConfigHash
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, util.BuildVolume(oasVolumeAuditConfig(), buildOASVolumeAuditConfig))
 	}
 
 	if serviceServingCA != nil {
@@ -250,7 +257,7 @@ func buildOASSocks5ProxyContainer(socks5ProxyImage string) func(c *corev1.Contai
 	}
 }
 
-func buildOASContainerMain(image string, etcdHostname string, port int32, internalOAuthDisable bool) func(c *corev1.Container) {
+func buildOASContainerMain(image string, etcdHostname string, port int32, internalOAuthDisable bool, auditEnabled bool) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		cpath := func(volume, file string) string {
 			return path.Join(volumeMounts.Path(c.Name, volume), file)
@@ -288,6 +295,9 @@ func buildOASContainerMain(image string, etcdHostname string, port int32, intern
 			},
 		}
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
+		if auditEnabled {
+			c.VolumeMounts = append(c.VolumeMounts, oasAuditConfigFileVolumeMount.ContainerMounts(c.Name)...)
+		}
 		c.WorkingDir = volumeMounts.Path(oasContainerMain().Name, oasVolumeWorkLogs().Name)
 		c.Ports = []corev1.ContainerPort{
 			{

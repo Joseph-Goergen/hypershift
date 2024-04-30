@@ -46,6 +46,11 @@ var (
 			oauthAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
 		},
 	}
+	oauthAuditConfigFileVolumeMount = util.PodVolumeMounts{
+		oauthContainerMain().Name: {
+			oauthVolumeAuditConfig().Name: "/etc/kubernetes/audit-config",
+		},
+	}
 )
 
 func openShiftOAuthAPIServerLabels() map[string]string {
@@ -89,12 +94,13 @@ func ReconcileOAuthAPIServerDeployment(deployment *appsv1.Deployment, ownerRef c
 	if deployment.Spec.Template.Annotations == nil {
 		deployment.Spec.Template.Annotations = map[string]string{}
 	}
-	deployment.Spec.Template.Annotations[oapiAuditConfigHashAnnotation] = auditConfigHash
+
+	auditEnabled := auditConfig.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType)
 
 	deployment.Spec.Template.Spec = corev1.PodSpec{
 		AutomountServiceAccountToken: pointer.Bool(false),
 		Containers: []corev1.Container{
-			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(p)),
+			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(p, auditEnabled)),
 		},
 		Volumes: []corev1.Volume{
 			util.BuildVolume(oauthVolumeWorkLogs(), buildOAuthVolumeWorkLogs),
@@ -108,7 +114,7 @@ func ReconcileOAuthAPIServerDeployment(deployment *appsv1.Deployment, ownerRef c
 		},
 	}
 
-	if auditConfig.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType) {
+	if auditEnabled {
 		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
 			Name:            "audit-logs",
 			Image:           p.Image,
@@ -130,6 +136,7 @@ func ReconcileOAuthAPIServerDeployment(deployment *appsv1.Deployment, ownerRef c
 				MountPath: oauthVolumeMounts.Path(oauthContainerMain().Name, oauthVolumeWorkLogs().Name),
 			}},
 		})
+		deployment.Spec.Template.Annotations[oapiAuditConfigHashAnnotation] = auditConfigHash
 	}
 
 	if p.AuditWebhookRef != nil {
@@ -147,7 +154,7 @@ func oauthContainerMain() *corev1.Container {
 	}
 }
 
-func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container) {
+func buildOAuthContainerMain(p *OAuthDeploymentParams, auditEnabled bool) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		cpath := func(volume, file string) string {
 			return path.Join(oauthVolumeMounts.Path(c.Name, volume), file)
@@ -161,10 +168,6 @@ func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container)
 			fmt.Sprintf("--kubeconfig=%s", cpath(oauthVolumeKubeconfig().Name, kas.KubeconfigKey)),
 			fmt.Sprintf("--secure-port=%d", OpenShiftOAuthAPIServerPort),
 			fmt.Sprintf("--api-audiences=%s", p.ServiceAccountIssuerURL),
-			fmt.Sprintf("--audit-log-path=%s", cpath(oauthVolumeWorkLogs().Name, "audit.log")),
-			"--audit-log-format=json",
-			"--audit-log-maxsize=10",
-			"--audit-log-maxbackup=1",
 			fmt.Sprintf("--etcd-cafile=%s", cpath(oauthVolumeEtcdClientCA().Name, certs.CASignerCertMapKey)),
 			fmt.Sprintf("--etcd-keyfile=%s", cpath(oauthVolumeEtcdClientCert().Name, pki.EtcdClientKeyKey)),
 			fmt.Sprintf("--etcd-certfile=%s", cpath(oauthVolumeEtcdClientCert().Name, pki.EtcdClientCrtKey)),
@@ -192,6 +195,15 @@ func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container)
 			c.Args = append(c.Args, fmt.Sprintf("--accesstoken-inactivity-timeout=%s", p.AccessTokenInactivityTimeout.Duration.String()))
 		}
 		c.VolumeMounts = oauthVolumeMounts.ContainerMounts(c.Name)
+		if auditEnabled {
+			c.Args = append(c.Args, []string{
+				fmt.Sprintf("--audit-log-path=%s", cpath(oauthVolumeWorkLogs().Name, "audit.log")),
+				"--audit-log-format=json",
+				"--audit-log-maxsize=10",
+				"--audit-log-maxbackup=1",
+			}...)
+			c.VolumeMounts = append(c.VolumeMounts, oauthAuditConfigFileVolumeMount.ContainerMounts(c.Name)...)
+		}
 		c.WorkingDir = oauthVolumeMounts.Path(oauthContainerMain().Name, oauthVolumeWorkLogs().Name)
 		c.Resources = corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{

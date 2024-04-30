@@ -48,7 +48,6 @@ var (
 		kasContainerMain().Name: {
 			kasVolumeWorkLogs().Name:               "/var/log/kube-apiserver",
 			kasVolumeAuthConfig().Name:             "/etc/kubernetes/auth",
-			kasVolumeConfig().Name:                 "/etc/kubernetes/config",
 			kasVolumeAuditConfig().Name:            "/etc/kubernetes/audit",
 			kasVolumeKonnectivityCA().Name:         "/etc/kubernetes/certs/konnectivity-ca",
 			kasVolumeServerCert().Name:             "/etc/kubernetes/certs/server",
@@ -81,6 +80,12 @@ var (
 	kasAuditWebhookConfigFileVolumeMount = util.PodVolumeMounts{
 		kasContainerMain().Name: {
 			kasAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
+		},
+	}
+
+	kasAuditConfigFileVolumeMount = util.PodVolumeMounts{
+		kasContainerMain().Name: {
+			kasVolumeConfig().Name: "/etc/kubernetes/config",
 		},
 	}
 
@@ -179,13 +184,14 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 	}
 	featureGateYaml := featureGateBuffer.String()
 
+	auditEnabled := auditConfig.Data[AuditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType)
+
 	deployment.Spec.Template = corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: kasLabels(),
 			Annotations: map[string]string{
-				configHashAnnotation:      configHash,
-				auditConfigHashAnnotation: auditConfigHash,
-				authConfigHashAnnotation:  authConfigHash,
+				configHashAnnotation:     configHash,
+				authConfigHashAnnotation: authConfigHash,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -203,7 +209,7 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 			},
 			Containers: []corev1.Container{
 				util.BuildContainer(kasContainerApplyBootstrap(), buildKASContainerApplyBootstrap(images.CLI)),
-				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp)),
+				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp, auditEnabled)),
 				util.BuildContainer(konnectivityServerContainer(), buildKonnectivityServerContainer(images.KonnectivityServer, deploymentConfig.Replicas, cipherSuites)),
 			},
 			Volumes: []corev1.Volume{
@@ -212,7 +218,6 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				util.BuildVolume(kasVolumeWorkLogs(), buildKASVolumeWorkLogs),
 				util.BuildVolume(kasVolumeConfig(), buildKASVolumeConfig),
 				util.BuildVolume(kasVolumeAuthConfig(), buildKASVolumeAuthConfig),
-				util.BuildVolume(kasVolumeAuditConfig(), buildKASVolumeAuditConfig),
 				util.BuildVolume(kasVolumeKonnectivityCA(), buildKASVolumeKonnectivityCA),
 				util.BuildVolume(kasVolumeServerCert(), buildKASVolumeServerCert),
 				util.BuildVolume(kasVolumeAggregatorCert(), buildKASVolumeAggregatorCert),
@@ -256,6 +261,9 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				MountPath: volumeMounts.Path(kasContainerMain().Name, kasVolumeWorkLogs().Name),
 			}},
 		})
+
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, util.BuildVolume(kasVolumeAuditConfig(), buildKASVolumeAuditConfig))
+		deployment.Spec.Template.ObjectMeta.Annotations[auditConfigHashAnnotation] = auditConfigHash
 	}
 
 	// With managed etcd, we should wait for the known etcd client service name to
@@ -420,7 +428,7 @@ func kasContainerMain() *corev1.Container {
 	}
 }
 
-func buildKASContainerMain(image string, port int32, noProxyCIDRs []string, hcp *hyperv1.HostedControlPlane) func(c *corev1.Container) {
+func buildKASContainerMain(image string, port int32, noProxyCIDRs []string, hcp *hyperv1.HostedControlPlane, auditEnabled bool) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		c.Image = image
 		c.TerminationMessagePolicy = corev1.TerminationMessageReadFile
@@ -467,6 +475,9 @@ func buildKASContainerMain(image string, port int32, noProxyCIDRs []string, hcp 
 
 		c.WorkingDir = volumeMounts.Path(c.Name, kasVolumeWorkLogs().Name)
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
+		if auditEnabled {
+			c.VolumeMounts = append(c.VolumeMounts, kasAuditConfigFileVolumeMount.ContainerMounts(c.Name)...)
+		}
 		c.Ports = []corev1.ContainerPort{
 			{
 				Name:          "client",
