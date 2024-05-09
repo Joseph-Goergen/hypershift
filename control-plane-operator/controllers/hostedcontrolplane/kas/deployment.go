@@ -192,7 +192,7 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 			DNSPolicy:       corev1.DNSClusterFirst,
 			RestartPolicy:   corev1.RestartPolicyAlways,
 			SecurityContext: &corev1.PodSecurityContext{},
-			// The KAS takes 90 seconds to finish its graceful shutdown, give it enough
+			// The KAS takes 90 seconds to finish its graceful shutdown, give it enoug
 			// time to do that + 5 seconds margin. The shutdown sequence is described
 			// in detail here: https://github.com/openshift/installer/blob/master/docs/dev/kube-apiserver-health-check.md
 			TerminationGracePeriodSeconds: pointer.Int64(95),
@@ -968,7 +968,11 @@ func buildKonnectivityVolumeClusterCerts(v *corev1.Volume) {
 }
 
 func renderAuditLogScript(auditLogFilePath string) string {
-	var script = `#!/bin/bash
+	var script = `#!/usr/bin/env bash
+set -o errexit
+set -o nounset
+set -o pipefail
+
 trap exit SIGTERM
 /usr/bin/tail -c+1 -F %s &
 wait $!
