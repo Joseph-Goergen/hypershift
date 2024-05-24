@@ -49,7 +49,6 @@ var (
 			kasVolumeWorkLogs().Name:               "/var/log/kube-apiserver",
 			kasVolumeAuthConfig().Name:             "/etc/kubernetes/auth",
 			kasVolumeConfig().Name:                 "/etc/kubernetes/config",
-			kasVolumeAuditConfig().Name:            "/etc/kubernetes/audit",
 			kasVolumeKonnectivityCA().Name:         "/etc/kubernetes/certs/konnectivity-ca",
 			kasVolumeServerCert().Name:             "/etc/kubernetes/certs/server",
 			kasVolumeAggregatorCert().Name:         "/etc/kubernetes/certs/aggregator",
@@ -81,6 +80,12 @@ var (
 	kasAuditWebhookConfigFileVolumeMount = util.PodVolumeMounts{
 		kasContainerMain().Name: {
 			kasAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
+		},
+	}
+
+	kasAuditConfigFileVolumeMount = util.PodVolumeMounts{
+		kasContainerMain().Name: {
+			kasVolumeAuditConfig().Name: "/etc/kubernetes/audit",
 		},
 	}
 
@@ -125,18 +130,13 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 	var additionalNoProxyCIDRS []string
 	additionalNoProxyCIDRS = append(additionalNoProxyCIDRS, util.ClusterCIDRs(hcp.Spec.Networking.ClusterNetwork)...)
 	additionalNoProxyCIDRS = append(additionalNoProxyCIDRS, util.ServiceCIDRs(hcp.Spec.Networking.ServiceNetwork)...)
+	auditEnabled := auditConfig.Data[AuditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType)
 
 	configBytes, ok := config.Data[KubeAPIServerConfigKey]
 	if !ok {
 		return fmt.Errorf("kube apiserver configuration is not expected to be empty")
 	}
 	configHash := util.ComputeHash(configBytes)
-
-	auditConfigBytes, ok := auditConfig.Data[AuditPolicyConfigMapKey]
-	if !ok {
-		return fmt.Errorf("kube apiserver audit configuration is not expected to be empty")
-	}
-	auditConfigHash := util.ComputeHash(auditConfigBytes)
 
 	authConfigBytes, ok := authConfig.Data[AuthConfigMapKey]
 	if !ok {
@@ -183,9 +183,8 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: kasLabels(),
 			Annotations: map[string]string{
-				configHashAnnotation:      configHash,
-				auditConfigHashAnnotation: auditConfigHash,
-				authConfigHashAnnotation:  authConfigHash,
+				configHashAnnotation:     configHash,
+				authConfigHashAnnotation: authConfigHash,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -203,7 +202,7 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 			},
 			Containers: []corev1.Container{
 				util.BuildContainer(kasContainerApplyBootstrap(), buildKASContainerApplyBootstrap(images.CLI)),
-				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp)),
+				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp, auditEnabled)),
 				util.BuildContainer(konnectivityServerContainer(), buildKonnectivityServerContainer(images.KonnectivityServer, deploymentConfig.Replicas, cipherSuites)),
 			},
 			Volumes: []corev1.Volume{
@@ -212,7 +211,6 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 				util.BuildVolume(kasVolumeWorkLogs(), buildKASVolumeWorkLogs),
 				util.BuildVolume(kasVolumeConfig(), buildKASVolumeConfig),
 				util.BuildVolume(kasVolumeAuthConfig(), buildKASVolumeAuthConfig),
-				util.BuildVolume(kasVolumeAuditConfig(), buildKASVolumeAuditConfig),
 				util.BuildVolume(kasVolumeKonnectivityCA(), buildKASVolumeKonnectivityCA),
 				util.BuildVolume(kasVolumeServerCert(), buildKASVolumeServerCert),
 				util.BuildVolume(kasVolumeAggregatorCert(), buildKASVolumeAggregatorCert),
@@ -234,7 +232,17 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 		},
 	}
 
-	if auditConfig.Data[AuditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType) {
+	if auditEnabled {
+		auditConfigBytes, ok := auditConfig.Data[AuditPolicyConfigMapKey]
+		if !ok {
+			return fmt.Errorf("kube apiserver audit configuration is not expected to be empty when auditing is enabled")
+		}
+		auditConfigHash := util.ComputeHash(auditConfigBytes)
+
+		deployment.Spec.Template.Annotations[auditConfigHashAnnotation] = auditConfigHash
+
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, util.BuildVolume(kasVolumeAuditConfig(), buildKASVolumeAuditConfig))
+
 		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
 			Name:            "audit-logs",
 			Image:           images.CLI,
@@ -420,7 +428,7 @@ func kasContainerMain() *corev1.Container {
 	}
 }
 
-func buildKASContainerMain(image string, port int32, noProxyCIDRs []string, hcp *hyperv1.HostedControlPlane) func(c *corev1.Container) {
+func buildKASContainerMain(image string, port int32, noProxyCIDRs []string, hcp *hyperv1.HostedControlPlane, auditEnabled bool) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		c.Image = image
 		c.TerminationMessagePolicy = corev1.TerminationMessageReadFile
@@ -467,6 +475,11 @@ func buildKASContainerMain(image string, port int32, noProxyCIDRs []string, hcp 
 
 		c.WorkingDir = volumeMounts.Path(c.Name, kasVolumeWorkLogs().Name)
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
+		if auditEnabled {
+			c.VolumeMounts = append(c.VolumeMounts,
+				kasAuditConfigFileVolumeMount.ContainerMounts(c.Name)...,
+			)
+		}
 		c.Ports = []corev1.ContainerPort{
 			{
 				Name:          "client",

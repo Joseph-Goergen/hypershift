@@ -40,12 +40,13 @@ func ReconcileConfig(config *corev1.ConfigMap,
 	ownerRef hcpconfig.OwnerRef,
 	p KubeAPIServerConfigParams,
 	version semver.Version,
+	auditEnabled bool,
 ) error {
 	ownerRef.ApplyTo(config)
 	if config.Data == nil {
 		config.Data = map[string]string{}
 	}
-	kasConfig := generateConfig(p, version)
+	kasConfig := generateConfig(p, version, auditEnabled)
 	serializedConfig, err := json.Marshal(kasConfig)
 	if err != nil {
 		return fmt.Errorf("failed to serialize kube apiserver config: %w", err)
@@ -62,7 +63,7 @@ func (a kubeAPIServerArgs) Set(name string, values ...string) {
 	a[name] = v
 }
 
-func generateConfig(p KubeAPIServerConfigParams, version semver.Version) *kcpv1.KubeAPIServerConfig {
+func generateConfig(p KubeAPIServerConfigParams, version semver.Version, auditEnabled bool) *kcpv1.KubeAPIServerConfig {
 	cpath := func(volume, file string) string {
 		return path.Join(volumeMounts.Path(kasContainerMain().Name, volume), file)
 	}
@@ -142,11 +143,13 @@ func generateConfig(p KubeAPIServerConfigParams, version semver.Version) *kcpv1.
 	args.Set("allow-privileged", "true")
 	args.Set("anonymous-auth", "true")
 	args.Set("api-audiences", p.ServiceAccountIssuerURL)
-	args.Set("audit-log-format", "json")
-	args.Set("audit-log-maxbackup", "1")
-	args.Set("audit-log-maxsize", "10")
-	args.Set("audit-log-path", cpath(kasVolumeWorkLogs().Name, AuditLogFile))
-	args.Set("audit-policy-file", cpath(kasVolumeAuditConfig().Name, AuditPolicyConfigMapKey))
+	if auditEnabled {
+		args.Set("audit-log-format", "json")
+		args.Set("audit-log-maxbackup", "1")
+		args.Set("audit-log-maxsize", "10")
+		args.Set("audit-log-path", cpath(kasVolumeWorkLogs().Name, AuditLogFile))
+		args.Set("audit-policy-file", path.Join(kasAuditConfigFileVolumeMount.Path(kasContainerMain().Name, kasVolumeAuditConfig().Name), AuditPolicyConfigMapKey))
+	}
 	args.Set("authorization-mode", "Scope", "SystemMasters", "RBAC", "Node")
 	args.Set("client-ca-file", cpath(common.VolumeTotalClientCA().Name, certs.CASignerCertMapKey))
 	if p.CloudProviderConfigRef != nil {

@@ -2412,6 +2412,7 @@ func (r *HostedControlPlaneReconciler) reconcileKubeAPIServer(ctx context.Contex
 			p.OwnerRef,
 			p.ConfigParams(),
 			ocpVersion,
+			kas.AuditEnabled(kubeAPIServerAuditConfig),
 		)
 	}); err != nil {
 		return fmt.Errorf("failed to reconcile api server config: %w", err)

@@ -60,6 +60,7 @@ type KubeAPIServerParams struct {
 	EtcdURL              string                       `json:"etcdAddress"`
 	KubeConfigRef        *hyperv1.KubeconfigSecretRef `json:"kubeConfigRef"`
 	AuditWebhookRef      *corev1.LocalObjectReference `json:"auditWebhookRef"`
+	AuditEnabled         bool                         `json:"auditEnabled"`
 	ConsolePublicURL     string                       `json:"consolePublicURL"`
 	DisableProfiling     bool                         `json:"disableProfiling"`
 	config.DeploymentConfig
