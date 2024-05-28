@@ -2730,18 +2730,19 @@ func (r *HostedControlPlaneReconciler) reconcileKubeScheduler(ctx context.Contex
 
 func (r *HostedControlPlaneReconciler) reconcileOpenShiftAPIServer(ctx context.Context, hcp *hyperv1.HostedControlPlane, observedConfig *globalconfig.ObservedConfig, releaseImageProvider *imageprovider.ReleaseImageProvider, createOrUpdate upsert.CreateOrUpdateFN, deployment *appsv1.Deployment) error {
 	p := oapi.NewOpenShiftAPIServerParams(hcp, observedConfig, releaseImageProvider, r.SetDefaultSecurityContext)
-	oapicfg := manifests.OpenShiftAPIServerConfig(hcp.Namespace)
-	if _, err := createOrUpdate(ctx, r, oapicfg, func() error {
-		return oapi.ReconcileConfig(oapicfg, p.AuditWebhookRef, p.OwnerRef, p.EtcdURL, p.IngressDomain(), p.MinTLSVersion(), p.CipherSuites(), p.Image, p.Project)
-	}); err != nil {
-		return fmt.Errorf("failed to reconcile openshift apiserver config: %w", err)
-	}
 
 	auditCfg := manifests.OpenShiftAPIServerAuditConfig(hcp.Namespace)
 	if _, err := createOrUpdate(ctx, r, auditCfg, func() error {
 		return oapi.ReconcileAuditConfig(auditCfg, p.OwnerRef, p.AuditPolicyConfig())
 	}); err != nil {
 		return fmt.Errorf("failed to reconcile openshift apiserver audit config: %w", err)
+	}
+
+	oapicfg := manifests.OpenShiftAPIServerConfig(hcp.Namespace)
+	if _, err := createOrUpdate(ctx, r, oapicfg, func() error {
+		return oapi.ReconcileConfig(oapicfg, p.AuditWebhookRef, p.OwnerRef, p.EtcdURL, p.IngressDomain(), p.MinTLSVersion(), p.CipherSuites(), p.Image, p.Project, oapi.AuditEnabled(auditCfg))
+	}); err != nil {
+		return fmt.Errorf("failed to reconcile openshift apiserver config: %w", err)
 	}
 
 	pdb := manifests.OpenShiftAPIServerPodDisruptionBudget(hcp.Namespace)

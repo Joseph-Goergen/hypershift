@@ -6,7 +6,6 @@ import (
 	"path"
 	"strings"
 
-	configv1 "github.com/openshift/api/config/v1"
 	hyperv1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -41,7 +40,6 @@ var (
 		oasContainerMain().Name: {
 			oasVolumeWorkLogs().Name:          "/var/log/openshift-apiserver",
 			oasVolumeConfig().Name:            "/etc/kubernetes/config",
-			oasVolumeAuditConfig().Name:       "/etc/kubernetes/audit-config",
 			common.VolumeAggregatorCA().Name:  "/etc/kubernetes/certs/aggregator-client-ca",
 			oasVolumeEtcdClientCA().Name:      "/etc/kubernetes/certs/etcd-client-ca",
 			oasVolumeKubeconfig().Name:        "/etc/kubernetes/secrets/svc-kubeconfig",
@@ -68,6 +66,12 @@ var (
 			oasAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
 		},
 	}
+
+	oasAuditConfigFileVolumeMount = util.PodVolumeMounts{
+		oasContainerMain().Name: {
+			oasVolumeAuditConfig().Name: "/etc/kubernetes/audit-config",
+		},
+	}
 )
 
 func openShiftAPIServerLabels() map[string]string {
@@ -91,12 +95,6 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 		return fmt.Errorf("openshift apiserver configuration is not expected to be empty")
 	}
 	configHash := util.ComputeHash(configBytes)
-
-	auditConfigBytes, ok := auditConfig.Data[auditPolicyConfigMapKey]
-	if !ok {
-		return fmt.Errorf("kube apiserver audit configuration is not expected to be empty")
-	}
-	auditConfigHash := util.ComputeHash(auditConfigBytes)
 
 	maxUnavailable := intstr.FromInt(1)
 	maxSurge := intstr.FromInt(3)
@@ -122,13 +120,12 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 		deployment.Spec.Template.Annotations = map[string]string{}
 	}
 	deployment.Spec.Template.Annotations[configHashAnnotation] = configHash
-	deployment.Spec.Template.Annotations[auditConfigHashAnnotation] = auditConfigHash
 
 	deployment.Spec.Template.Spec = corev1.PodSpec{
 		AutomountServiceAccountToken: pointer.Bool(false),
 		InitContainers:               []corev1.Container{util.BuildContainer(oasTrustAnchorGenerator(), buildOASTrustAnchorGenerator(image))},
 		Containers: []corev1.Container{
-			util.BuildContainer(oasContainerMain(), buildOASContainerMain(image, strings.Split(etcdUrlData.Host, ":")[0], defaultOAPIPort, internalOAuthDisable)),
+			util.BuildContainer(oasContainerMain(), buildOASContainerMain(image, strings.Split(etcdUrlData.Host, ":")[0], defaultOAPIPort, internalOAuthDisable, AuditEnabled(auditConfig))),
 			util.BuildContainer(oasSocks5ProxyContainer(), buildOASSocks5ProxyContainer(socks5ProxyImage)),
 		},
 		Volumes: []corev1.Volume{
@@ -154,7 +151,17 @@ func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.
 		},
 	}
 
-	if auditConfig.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType) {
+	if AuditEnabled(auditConfig) {
+		auditConfigBytes, ok := auditConfig.Data[auditPolicyConfigMapKey]
+		if !ok {
+			return fmt.Errorf("kube apiserver audit configuration is not expected to be empty when enabled")
+		}
+		auditConfigHash := util.ComputeHash(auditConfigBytes)
+
+		deployment.Spec.Template.Annotations[auditConfigHashAnnotation] = auditConfigHash
+
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, util.BuildVolume(oasVolumeAuditConfig(), buildOASVolumeAuditConfig))
+
 		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
 			Name:            "audit-logs",
 			Image:           image,
@@ -250,7 +257,7 @@ func buildOASSocks5ProxyContainer(socks5ProxyImage string) func(c *corev1.Contai
 	}
 }
 
-func buildOASContainerMain(image string, etcdHostname string, port int32, internalOAuthDisable bool) func(c *corev1.Container) {
+func buildOASContainerMain(image string, etcdHostname string, port int32, internalOAuthDisable bool, auditEnabled bool) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		cpath := func(volume, file string) string {
 			return path.Join(volumeMounts.Path(c.Name, volume), file)
@@ -288,6 +295,11 @@ func buildOASContainerMain(image string, etcdHostname string, port int32, intern
 			},
 		}
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
+		if auditEnabled {
+			c.VolumeMounts = append(c.VolumeMounts,
+				oasAuditConfigFileVolumeMount.ContainerMounts(c.Name)...,
+			)
+		}
 		c.WorkingDir = volumeMounts.Path(oasContainerMain().Name, oasVolumeWorkLogs().Name)
 		c.Ports = []corev1.ContainerPort{
 			{

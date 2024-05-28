@@ -130,7 +130,6 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 	var additionalNoProxyCIDRS []string
 	additionalNoProxyCIDRS = append(additionalNoProxyCIDRS, util.ClusterCIDRs(hcp.Spec.Networking.ClusterNetwork)...)
 	additionalNoProxyCIDRS = append(additionalNoProxyCIDRS, util.ServiceCIDRs(hcp.Spec.Networking.ServiceNetwork)...)
-	auditEnabled := auditConfig.Data[AuditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType)
 
 	configBytes, ok := config.Data[KubeAPIServerConfigKey]
 	if !ok {
@@ -202,7 +201,7 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 			},
 			Containers: []corev1.Container{
 				util.BuildContainer(kasContainerApplyBootstrap(), buildKASContainerApplyBootstrap(images.CLI)),
-				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp, auditEnabled)),
+				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS, hcp, AuditEnabled(auditConfig))),
 				util.BuildContainer(konnectivityServerContainer(), buildKonnectivityServerContainer(images.KonnectivityServer, deploymentConfig.Replicas, cipherSuites)),
 			},
 			Volumes: []corev1.Volume{
@@ -232,7 +231,7 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 		},
 	}
 
-	if auditEnabled {
+	if AuditEnabled(auditConfig) {
 		auditConfigBytes, ok := auditConfig.Data[AuditPolicyConfigMapKey]
 		if !ok {
 			return fmt.Errorf("kube apiserver audit configuration is not expected to be empty when auditing is enabled")

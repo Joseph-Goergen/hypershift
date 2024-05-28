@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path"
 
-	configv1 "github.com/openshift/api/config/v1"
 	hyperv1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -32,7 +31,6 @@ var (
 	oauthVolumeMounts = util.PodVolumeMounts{
 		oauthContainerMain().Name: {
 			oauthVolumeWorkLogs().Name:        "/var/log/openshift-oauth-apiserver",
-			oauthVolumeAuditConfig().Name:     "/etc/kubernetes/audit-config",
 			common.VolumeAggregatorCA().Name:  "/etc/kubernetes/certs/aggregator-client-ca",
 			oauthVolumeEtcdClientCA().Name:    "/etc/kubernetes/certs/etcd-client-ca",
 			oauthVolumeKubeconfig().Name:      "/etc/kubernetes/secrets/svc-kubeconfig",
@@ -44,6 +42,11 @@ var (
 	oauthAuditWebhookConfigFileVolumeMount = util.PodVolumeMounts{
 		oauthContainerMain().Name: {
 			oauthAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
+		},
+	}
+	oauthAuditConfigFileVolumeMount = util.PodVolumeMounts{
+		oauthContainerMain().Name: {
+			oauthVolumeAuditConfig().Name: "/etc/kubernetes/audit-config",
 		},
 	}
 )
@@ -67,12 +70,6 @@ func ReconcileOAuthAPIServerDeployment(deployment *appsv1.Deployment, ownerRef c
 	maxUnavailable := intstr.FromInt(1)
 	maxSurge := intstr.FromInt(3)
 
-	auditConfigBytes, ok := auditConfig.Data[auditPolicyConfigMapKey]
-	if !ok {
-		return fmt.Errorf("openshift-oauth-apiserver audit configuration is not expected to be empty")
-	}
-	auditConfigHash := util.ComputeHash(auditConfigBytes)
-
 	deployment.Spec.Strategy = appsv1.DeploymentStrategy{
 		Type: appsv1.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{
@@ -89,16 +86,14 @@ func ReconcileOAuthAPIServerDeployment(deployment *appsv1.Deployment, ownerRef c
 	if deployment.Spec.Template.Annotations == nil {
 		deployment.Spec.Template.Annotations = map[string]string{}
 	}
-	deployment.Spec.Template.Annotations[oapiAuditConfigHashAnnotation] = auditConfigHash
 
 	deployment.Spec.Template.Spec = corev1.PodSpec{
 		AutomountServiceAccountToken: pointer.Bool(false),
 		Containers: []corev1.Container{
-			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(p)),
+			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(p, AuditEnabled(auditConfig))),
 		},
 		Volumes: []corev1.Volume{
 			util.BuildVolume(oauthVolumeWorkLogs(), buildOAuthVolumeWorkLogs),
-			util.BuildVolume(oauthVolumeAuditConfig(), buildOAuthVolumeAuditConfig),
 			util.BuildVolume(common.VolumeAggregatorCA(), common.BuildVolumeAggregatorCA),
 			util.BuildVolume(oauthVolumeEtcdClientCA(), buildOAuthVolumeEtcdClientCA),
 			util.BuildVolume(oauthVolumeKubeconfig(), buildOAuthVolumeKubeconfig),
@@ -108,7 +103,17 @@ func ReconcileOAuthAPIServerDeployment(deployment *appsv1.Deployment, ownerRef c
 		},
 	}
 
-	if auditConfig.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType) {
+	if AuditEnabled(auditConfig) {
+		auditConfigBytes, ok := auditConfig.Data[auditPolicyConfigMapKey]
+		if !ok {
+			return fmt.Errorf("openshift-oauth-apiserver audit configuration is not expected to be empty when enabled")
+		}
+		auditConfigHash := util.ComputeHash(auditConfigBytes)
+
+		deployment.Spec.Template.Annotations[oapiAuditConfigHashAnnotation] = auditConfigHash
+
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, util.BuildVolume(oauthVolumeAuditConfig(), buildOAuthVolumeAuditConfig))
+
 		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
 			Name:            "audit-logs",
 			Image:           p.Image,
@@ -147,7 +152,7 @@ func oauthContainerMain() *corev1.Container {
 	}
 }
 
-func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container) {
+func buildOAuthContainerMain(p *OAuthDeploymentParams, auditEnabled bool) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		cpath := func(volume, file string) string {
 			return path.Join(oauthVolumeMounts.Path(c.Name, volume), file)
@@ -161,17 +166,12 @@ func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container)
 			fmt.Sprintf("--kubeconfig=%s", cpath(oauthVolumeKubeconfig().Name, kas.KubeconfigKey)),
 			fmt.Sprintf("--secure-port=%d", OpenShiftOAuthAPIServerPort),
 			fmt.Sprintf("--api-audiences=%s", p.ServiceAccountIssuerURL),
-			fmt.Sprintf("--audit-log-path=%s", cpath(oauthVolumeWorkLogs().Name, "audit.log")),
-			"--audit-log-format=json",
-			"--audit-log-maxsize=10",
-			"--audit-log-maxbackup=1",
 			fmt.Sprintf("--etcd-cafile=%s", cpath(oauthVolumeEtcdClientCA().Name, certs.CASignerCertMapKey)),
 			fmt.Sprintf("--etcd-keyfile=%s", cpath(oauthVolumeEtcdClientCert().Name, pki.EtcdClientKeyKey)),
 			fmt.Sprintf("--etcd-certfile=%s", cpath(oauthVolumeEtcdClientCert().Name, pki.EtcdClientCrtKey)),
 			"--shutdown-delay-duration=3s",
 			fmt.Sprintf("--tls-private-key-file=%s", cpath(oauthVolumeServingCert().Name, corev1.TLSPrivateKeyKey)),
 			fmt.Sprintf("--tls-cert-file=%s", cpath(oauthVolumeServingCert().Name, corev1.TLSCertKey)),
-			fmt.Sprintf("--audit-policy-file=%s", cpath(oauthVolumeAuditConfig().Name, auditPolicyConfigMapKey)),
 			"--cors-allowed-origins='//127\\.0\\.0\\.1(:|$)'",
 			"--cors-allowed-origins='//localhost(:|$)'",
 			fmt.Sprintf("--etcd-servers=%s", p.EtcdURL),
@@ -184,6 +184,15 @@ func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container)
 			"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 			fmt.Sprintf("--client-ca-file=%s", cpath(common.VolumeTotalClientCA().Name, certs.CASignerCertMapKey)),
 		}
+		if auditEnabled {
+			c.Args = append(c.Args, []string{
+				fmt.Sprintf("--audit-policy-file=%s", path.Join(oauthAuditConfigFileVolumeMount.Path(c.Name, oauthVolumeAuditConfig().Name), auditPolicyConfigMapKey)),
+				fmt.Sprintf("--audit-log-path=%s", cpath(oauthVolumeWorkLogs().Name, "audit.log")),
+				"--audit-log-format=json",
+				"--audit-log-maxsize=10",
+				"--audit-log-maxbackup=1",
+			}...)
+		}
 		if p.AuditWebhookRef != nil {
 			c.Args = append(c.Args, fmt.Sprintf("--audit-webhook-config-file=%s", oauthAuditWebhookConfigFile()))
 			c.Args = append(c.Args, "--audit-webhook-mode=batch")
@@ -192,6 +201,9 @@ func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container)
 			c.Args = append(c.Args, fmt.Sprintf("--accesstoken-inactivity-timeout=%s", p.AccessTokenInactivityTimeout.Duration.String()))
 		}
 		c.VolumeMounts = oauthVolumeMounts.ContainerMounts(c.Name)
+		if auditEnabled {
+			c.VolumeMounts = append(c.VolumeMounts, oauthAuditConfigFileVolumeMount.ContainerMounts(c.Name)...)
+		}
 		c.WorkingDir = oauthVolumeMounts.Path(oauthContainerMain().Name, oauthVolumeWorkLogs().Name)
 		c.Resources = corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
