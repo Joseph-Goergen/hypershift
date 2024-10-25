@@ -22,3 +22,7 @@ func ReconcileAuditConfig(cm *corev1.ConfigMap, ownerRef config.OwnerRef, auditC
 	cm.Data[auditPolicyProfileMapKey] = string(auditConfig.Profile)
 	return nil
 }
+
+func AuditEnabled(auditCfgMap *corev1.ConfigMap) bool {
+	return auditCfgMap.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType)
+}

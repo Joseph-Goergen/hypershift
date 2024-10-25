@@ -44,7 +44,6 @@ var (
 			oauthVolumeProvidersTemplate().Name: "/etc/kubernetes/secrets/templates/providers",
 			oauthVolumeWorkLogs().Name:          "/var/run/kubernetes",
 			oauthVolumeMasterCABundle().Name:    "/etc/kubernetes/certs/master-ca",
-			oauthVolumeAuditConfig().Name:       "/etc/kubernetes/audit-config",
 		},
 		oauthContainerSocks5Proxy().Name: {
 			oauthVolumeKubeconfig().Name:                   "/etc/kubernetes",
@@ -60,6 +59,11 @@ var (
 	oauthAuditWebhookConfigFileVolumeMount = util.PodVolumeMounts{
 		oauthContainerMain().Name: {
 			oauthAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
+		},
+	}
+	oauthAuditPolicyConfigFileVolumeMount = util.PodVolumeMounts{
+		oauthContainerMain().Name: {
+			oauthVolumeAuditConfig().Name: "/etc/kubernetes/audit-config",
 		},
 	}
 )
@@ -108,7 +112,7 @@ func ReconcileDeployment(ctx context.Context, client client.Client, deployment *
 	deployment.Spec.Template.Spec = corev1.PodSpec{
 		AutomountServiceAccountToken: ptr.To(false),
 		Containers: []corev1.Container{
-			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(image, auditWebhookRef, oauthNoProxy)),
+			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(image, auditWebhookRef, oauthNoProxy, AuditEnabled(auditConfig))),
 			util.BuildContainer(oauthContainerSocks5Proxy(), buildOAuthContainerSocks5Proxy(proxyImage)),
 			util.BuildContainer(oauthContainerHTTPProxy(), buildOAuthContainerHTTPProxy(proxyImage, proxyConfig, clusterNoProxy)),
 		},
@@ -129,13 +133,12 @@ func ReconcileDeployment(ctx context.Context, client client.Client, deployment *
 				}),
 			util.BuildVolume(oauthVolumeWorkLogs(), buildOAuthVolumeWorkLogs),
 			util.BuildVolume(oauthVolumeMasterCABundle(), buildOAuthVolumeMasterCABundle),
-			util.BuildVolume(oauthVolumeAuditConfig(), buildOAuthVolumeAuditConfig),
 			util.BuildVolume(oauthVolumeKonnectivityProxyClientCert(), buildOAuthVolumeKonnectivityProxyClientCert),
 			util.BuildVolume(oauthVolumeKonnectivityProxyTrustBundle(), buildOAuthVolumeKonnectivityProxyTrustBundle),
 		},
 	}
 
-	if auditConfig.Data[auditPolicyProfileMapKey] != string(configv1.NoneAuditProfileType) {
+	if AuditEnabled(auditConfig) {
 		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
 			Name:            "audit-logs",
 			Image:           image,
@@ -156,6 +159,7 @@ func ReconcileDeployment(ctx context.Context, client client.Client, deployment *
 				MountPath: volumeMounts.Path(oauthContainerMain().Name, oauthVolumeWorkLogs().Name),
 			}},
 		})
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, util.BuildVolume(oauthVolumeAuditConfig(), buildOAuthVolumeAuditConfig))
 	}
 
 	if auditWebhookRef != nil {
@@ -182,17 +186,12 @@ func oauthContainerMain() *corev1.Container {
 	}
 }
 
-func buildOAuthContainerMain(image string, auditWebhookRef *corev1.LocalObjectReference, noProxy []string) func(c *corev1.Container) {
+func buildOAuthContainerMain(image string, auditWebhookRef *corev1.LocalObjectReference, noProxy []string, auditEnabled bool) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		c.Image = image
 		c.Args = []string{
 			"osinserver",
 			fmt.Sprintf("--config=%s", path.Join(volumeMounts.Path(c.Name, oauthVolumeConfig().Name), OAuthServerConfigKey)),
-			"--audit-log-format=json",
-			"--audit-log-maxbackup=1",
-			"--audit-log-maxsize=10",
-			fmt.Sprintf("--audit-log-path=%s", path.Join(volumeMounts.Path(c.Name, oauthVolumeWorkLogs().Name), "audit.log")),
-			fmt.Sprintf("--audit-policy-file=%s", path.Join(volumeMounts.Path(c.Name, oauthVolumeAuditConfig().Name), auditPolicyConfigMapKey)),
 		}
 
 		if auditWebhookRef != nil {
@@ -201,6 +200,18 @@ func buildOAuthContainerMain(image string, auditWebhookRef *corev1.LocalObjectRe
 		}
 
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
+
+		if auditEnabled {
+			c.Args = append(c.Args, []string{
+				"--audit-log-format=json",
+				"--audit-log-maxbackup=1",
+				"--audit-log-maxsize=10",
+				fmt.Sprintf("--audit-log-path=%s", path.Join(volumeMounts.Path(c.Name, oauthVolumeWorkLogs().Name), "audit.log")),
+				fmt.Sprintf("--audit-policy-file=%s", path.Join(volumeMounts.Path(c.Name, oauthVolumeAuditConfig().Name), auditPolicyConfigMapKey)),
+			}...)
+			c.VolumeMounts = append(c.VolumeMounts, oauthAuditPolicyConfigFileVolumeMount.ContainerMounts(oauthContainerMain().Name)...)
+		}
+
 		c.WorkingDir = volumeMounts.Path(c.Name, oauthVolumeWorkLogs().Name)
 		c.Env = []corev1.EnvVar{
 			/** NOTE:
