@@ -36,6 +36,6 @@ func AdaptAuditConfig(cpContext component.ControlPlaneContext, auditCfgMap *core
 	return nil
 }
 
-func auditEnabled(cpContext component.ControlPlaneContext) bool {
+func AuditEnabled(cpContext component.ControlPlaneContext) bool {
 	return cpContext.HCP.Spec.Configuration.GetAuditPolicyConfig().Profile != configv1.NoneAuditProfileType
 }
