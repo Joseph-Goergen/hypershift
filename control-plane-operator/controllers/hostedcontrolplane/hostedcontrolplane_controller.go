@@ -101,6 +101,8 @@ import (
 	"github.com/openshift/hypershift/support/upsert"
 	"github.com/openshift/hypershift/support/util"
 	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+
+	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -981,6 +983,28 @@ func (r *HostedControlPlaneReconciler) reconcileCPOV2(ctx context.Context, hcp *
 		r.Log.Info("Reconciling component", "component_name", c.Name())
 		if err := c.Reconcile(cpContext); err != nil {
 			errs = append(errs, err)
+		}
+	}
+
+	if hcp.Spec.Configuration.GetAuditPolicyConfig().Profile == configv1.NoneAuditProfileType {
+		kubeAPIServerAuditConfig := manifests.KASAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, kubeAPIServerAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove kas-audit-config configmap: %w", err)
+		}
+
+		openshiftAPIServerAuditConfig := manifests.OpenShiftAPIServerAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, openshiftAPIServerAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove openshift-apiserver-audit configmap: %w", err)
+		}
+
+		openshiftOAuthAPIServerAuditConfig := manifests.OpenShiftOAuthAPIServerAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, openshiftOAuthAPIServerAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove openshift-oauth-apiserver-audit configmap: %w", err)
+		}
+
+		oAuthAuditConfig := manifests.OAuthAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, oAuthAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove oauth-openshift-audit configmap: %w", err)
 		}
 	}
 
