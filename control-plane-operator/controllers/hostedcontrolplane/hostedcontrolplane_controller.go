@@ -101,6 +101,8 @@ import (
 	"github.com/openshift/hypershift/support/upsert"
 	"github.com/openshift/hypershift/support/util"
 	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+
+	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -984,6 +986,28 @@ func (r *HostedControlPlaneReconciler) reconcileCPOV2(ctx context.Context, hcp *
 		}
 	}
 
+	if hcp.Spec.Configuration.GetAuditPolicyConfig().Profile == configv1.NoneAuditProfileType {
+		kubeAPIServerAuditConfig := manifests.KASAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, kubeAPIServerAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove kas-audit-config configmap: %w", err)
+		}
+
+		openshiftAPIServerAuditConfig := manifests.OpenShiftAPIServerAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, openshiftAPIServerAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove openshift-apiserver-audit configmap: %w", err)
+		}
+
+		openshiftOAuthAPIServerAuditConfig := manifests.OpenShiftOAuthAPIServerAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, openshiftOAuthAPIServerAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove openshift-oauth-apiserver-audit configmap: %w", err)
+		}
+
+		oAuthAuditConfig := manifests.OAuthAuditConfig(hcp.Namespace)
+		if _, err := util.DeleteIfNeeded(ctx, r, oAuthAuditConfig); err != nil {
+			return fmt.Errorf("failed to remove oauth-openshift-audit configmap: %w", err)
+		}
+	}
+
 	return utilerrors.NewAggregate(errs)
 }
 
@@ -1187,12 +1211,12 @@ func (r *HostedControlPlaneReconciler) reconcile(ctx context.Context, hostedCont
 			if err := r.reconcileOpenShiftOAuthAPIServer(ctx, hostedControlPlane, observedConfig, releaseImageProvider, createOrUpdate); err != nil {
 				return fmt.Errorf("failed to reconcile openshift oauth apiserver: %w", err)
 			}
-		}
 
-		// Reconcile oauth server
-		r.Log.Info("Reconciling OAuth Server")
-		if err := r.reconcileOAuthServer(ctx, hostedControlPlane, releaseImageProvider, infraStatus.OAuthHost, infraStatus.OAuthPort, createOrUpdate); err != nil {
-			return fmt.Errorf("failed to reconcile openshift oauth apiserver: %w", err)
+			// Reconcile oauth server
+			r.Log.Info("Reconciling OAuth Server")
+			if err := r.reconcileOAuthServer(ctx, hostedControlPlane, releaseImageProvider, infraStatus.OAuthHost, infraStatus.OAuthPort, createOrUpdate); err != nil {
+				return fmt.Errorf("failed to reconcile openshift oauth apiserver: %w", err)
+			}
 		}
 
 		// TODO: move this up with the rest of conditions reconciliation logic?
